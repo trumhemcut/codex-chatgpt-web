@@ -6,6 +6,8 @@ The user trusts the local Codex app, this loopback daemon, the launcher's privat
 profile, the selected ChatGPT workspace, OpenAI's tunnel service, and the exact MCP connector they
 created. Repository contents, tool output, websites, and prompt text are untrusted data.
 
+GitHub Copilot CLI and VS Code Copilot Chat are optional local clients inside the same OS-user trust boundary. The bridge never reads or writes GitHub credentials, `~/.copilot` authentication state, or VS Code/Copilot tokens. Copilot-owned tools, MCP servers, approvals, workspace context, and persistent chat history stay owned by the originating client. The bridge receives only the public provider request sent to its loopback Responses endpoint.
+
 ## Full-mode capability flow
 
 1. The daemon accepts a Codex Responses turn on `127.0.0.1`.
@@ -110,6 +112,8 @@ bounded local continuation cache is private, expires, and exists only to impleme
 one-shot MCP control capability in the exact retained source chat. If that chat no longer exists, a
 fresh tool-free Temporary Chat receives the canonical Codex history; the bridge never parses ordinary
 assistant prose as a structured handoff.
+
+Copilot clients do not share a bridge-side session identifier. Each HTTP request has its own lifecycle, and Copilot CLI or VS Code supplies prior conversation/tool state again when continuing. This removes a client-to-client routing table from the trust boundary. Tool execution remains in the client that received the streamed tool call, so Codex Native2 authority is not reused for Copilot tool calls.
 
 ## Network exposure
 

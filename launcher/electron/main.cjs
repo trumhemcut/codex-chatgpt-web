@@ -780,6 +780,8 @@ function registerIpc({ logger, stateStore }) {
     stopCatalogVerificationMonitor();
     return { cancelled: false, state };
   });
+  handle("launcher:integration-status", (_event, target) => runtimeHost.integrationStatus(target));
+  handle("launcher:set-integration", (_event, target, enabled) => runtimeHost.setIntegration(target, enabled === true));
   handle("launcher:setup-core", async () => {
     const setupState = stateStore.read();
     if (setupState.browserInteractionMode === "automatic") {

@@ -10,10 +10,49 @@ import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
 import { parseRequest } from "../src/responses/parser";
 import { compactRequest, HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
+import type { ProviderAdapter } from "../src/adapters/base";
 
 test("DEV harness configuration cannot bind a Responses listener", () => {
   const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
   expect(() => startServer(config)).toThrow("cannot start a Responses listener");
+});
+
+test("Copilot route is gated and marks only that route as client-owned tool mode", async () => {
+  const makeAdapter = (seen: boolean[]): ProviderAdapter => ({
+    name: "copilot-route-probe",
+    async runTurn(parsed, _incoming, emit) {
+      seen.push(parsed._copilotClientTools === true);
+      emit({ type: "text_delta", text: "ok", phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+    },
+  });
+  const body = JSON.stringify({ model: "chatgpt-web/gpt-5.6-sol", input: "probe", stream: false });
+
+  const disabled = { ...defaultConfig("browser-only"), port: 0 };
+  const disabledServer = startServer(disabled, { adapterFactory: () => makeAdapter([]) });
+  try {
+    expect((await fetch(`http://127.0.0.1:${disabledServer.port}/copilot/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    })).status).toBe(404);
+  } finally {
+    await disabledServer.stop(true);
+  }
+
+  const seen: boolean[] = [];
+  const enabled = { ...defaultConfig("browser-only"), port: 0 };
+  enabled.integrations.copilotCli.enabled = true;
+  const enabledServer = startServer(enabled, { adapterFactory: () => makeAdapter(seen) });
+  try {
+    await (await fetch(`http://127.0.0.1:${enabledServer.port}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    })).text();
+    await (await fetch(`http://127.0.0.1:${enabledServer.port}/copilot/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    })).text();
+    expect(seen).toEqual([false, true]);
+  } finally {
+    await enabledServer.stop(true);
+  }
 });
 
 async function waitForTurnCount(turns: HttpTurnCounter, expected: number): Promise<void> {

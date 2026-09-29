@@ -1620,6 +1620,10 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const [clientIntegrations, setClientIntegrations] = useState<Record<"copilot-cli" | "vscode-copilot", Record<string, unknown> | null>>({
+    "copilot-cli": null,
+    "vscode-copilot": null,
+  });
   const currentPluginName = snapshot.connectorNames[snapshot.state.browserInteractionMode];
   const [nameSuffix, setNameSuffix] = useState(currentPluginName.slice(6));
   const [confirmNameChange, setConfirmNameChange] = useState(false);
@@ -1628,6 +1632,14 @@ function SettingsSurface({
     setNameSuffix(currentPluginName.slice(6));
     setConfirmNameChange(false);
   }, [currentPluginName]);
+  useEffect(() => {
+    if (devProfile) return;
+    for (const target of ["copilot-cli", "vscode-copilot"] as const) {
+      void api!.integrationStatus(target)
+        .then(status => setClientIntegrations(current => ({ ...current, [target]: status })))
+        .catch(() => {});
+    }
+  }, [devProfile]);
   const changePluginName = async () => {
     setBusy(true);
     setError(null);
@@ -1743,6 +1755,19 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setClientIntegration = async (target: "copilot-cli" | "vscode-copilot", enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api!.setIntegration(target, enabled);
+      const status = await api!.integrationStatus(target);
+      setClientIntegrations(current => ({ ...current, [target]: status }));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
@@ -1844,6 +1869,22 @@ function SettingsSurface({
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
+        {!devProfile ? <>
+          <SettingRow body="Use the shared local ChatGPT Web bridge from GitHub Copilot CLI." label="GitHub Copilot CLI">
+            <Switch
+              checked={clientIntegrations["copilot-cli"]?.enabled === true}
+              disabled={busy}
+              onChange={(checked) => void setClientIntegration("copilot-cli", checked)}
+            />
+          </SettingRow>
+          <SettingRow body="Expose the ChatGPT Web language-model provider to VS Code Copilot Chat." label="VS Code Copilot Chat">
+            <Switch
+              checked={clientIntegrations["vscode-copilot"]?.enabled === true}
+              disabled={busy}
+              onChange={(checked) => void setClientIntegration("vscode-copilot", checked)}
+            />
+          </SettingRow>
+        </> : null}
       </div>
 
       {!devProfile && snapshot.state.codexRestartRequired ? (

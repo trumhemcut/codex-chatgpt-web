@@ -153,6 +153,8 @@ export interface LauncherApi {
   doctor(): Promise<DoctorReport>;
   cancelTurns(): Promise<{ stdout: string }>;
   uninstallIntegration(): Promise<{ cancelled: true } | { cancelled: false; state: LauncherState }>;
+  integrationStatus(target: "copilot-cli" | "vscode-copilot"): Promise<Record<string, unknown>>;
+  setIntegration(target: "copilot-cli" | "vscode-copilot", enabled: boolean): Promise<{ enabled: boolean }>;
   setupCore(): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;
   setupMcp(input: {
     tunnelId?: string;

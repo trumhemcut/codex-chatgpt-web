@@ -1,0 +1,15 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "turn_1": {
+    "input": [{"role":"user","content":[{"type":"input_text","text":"[sanitized turn one]"}],"type":"message"}],
+    "previous_response_id": null
+  },
+  "turn_2": {
+    "input": [
+      {"role":"user","content":[{"type":"input_text","text":"[sanitized turn one]"}],"type":"message"},
+      {"role":"user","content":[{"type":"input_text","text":"[sanitized turn two]"}],"type":"message"}
+    ],
+    "previous_response_id": null
+  },
+  "note": "Copilot CLI persists session history client-side and resends it on resume; the provider request does not carry the CLI session UUID or previous_response_id."
+}

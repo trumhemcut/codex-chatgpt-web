@@ -56,6 +56,31 @@ test("launcher setup refreshes account capabilities only when missing or explici
   } as never, false, "automatic")).toBe(true);
 });
 
+test("setup can leave Codex integration disabled for another client", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-web-setup-no-codex-"));
+  const configPath = join(root, "config.json");
+  const mocks = [
+    spyOn(configModule, "getConfigPath").mockReturnValue(configPath),
+    spyOn(configModule, "saveConfig").mockImplementation(() => {}),
+    spyOn(integration, "preflightCodexIntegration").mockImplementation(() => { throw new Error("Codex preflight should be skipped"); }),
+    spyOn(integration, "installCodexIntegration").mockImplementation(() => { throw new Error("Codex install should be skipped"); }),
+    spyOn(service, "getServiceStatus").mockReturnValue({ installed: false, loaded: false } as never),
+    spyOn(service, "removeLegacyRuntimeArtifacts").mockImplementation(() => {}),
+    spyOn(browserLogin, "browserLoginStateExists").mockReturnValue(true),
+    spyOn(browserLogin, "storedBrowserLoginCapabilities").mockReturnValue({ solAvailable: true, extraHighAvailable: false, proAvailable: false } as never),
+  ];
+  try {
+    const result = await setup({
+      mode: "browser-only",
+      integrations: { codex: { enabled: false }, copilotCli: { enabled: true } },
+    });
+    expect(result.codexRestartRequired).toBe(false);
+  } finally {
+    for (const mock of mocks.reverse()) mock.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const development of [false, true]) for (const interaction of ["manual", "automatic"] as const) {
   test(`${development ? "DEV" : "production"} ${interaction} setup commits the tunnel inputs before its supervisor starts the runtime`, async () => {
     const root = mkdtempSync(join(tmpdir(), "codex-web-setup-owner-"));

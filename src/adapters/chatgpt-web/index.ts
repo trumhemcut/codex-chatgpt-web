@@ -225,6 +225,7 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content.map(part => {
     if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "file") return { type: "text", text: `[file attachment: ${part.filename}]` };
     const parsed = parseDataUrl(part.imageUrl);
     if (parsed) return { type: "image", data: parsed.base64, mimeType: parsed.mediaType };
     return { type: "resource_link", uri: part.imageUrl, name: "Codex tool image", mimeType: "image/*" };
@@ -281,8 +282,13 @@ function emitTextDeltas(deltas: string[], emit: (event: AdapterEvent) => void): 
 function emitReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  copilotClientTools: boolean,
   emit: (event: AdapterEvent) => void,
 ): void {
+  // GitHub Copilot CLI owns local tool execution in this mode; the native-computer-access
+  // warning below is about ChatGPT's own local tool, not Copilot's, and misleads/corrupts
+  // the client's answer if emitted here (see docs/github-copilot-usage.md troubleshooting).
+  if (copilotClientTools) return;
   const warning = chatGptReadOnlyContextWarning(parsed, capabilities);
   if (!warning) return;
   emit({ type: "assistant_boundary" });
@@ -452,6 +458,7 @@ export function createChatGptWebAdapter(
       return {
         captureLunaCheckpoint,
         experimentalSkillAttachments,
+        ...(input._copilotClientTools ? { copilotClientTools: true } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
@@ -834,9 +841,13 @@ export function createChatGptWebAdapter(
           });
           return;
         }
+        const identity = extractChatGptTurnIdentity(parsed);
+        const nativeCodexTurn = Boolean(identity.threadId && identity.turnId);
         const turnCapabilities = parsed._compactionRequest && !manualRequest
           ? { ...configuredCapabilities, localToolsEnabled: false }
-          : configuredCapabilities;
+          : configuredCapabilities.localToolsEnabled && !nativeCodexTurn
+            ? { ...configuredCapabilities, localToolsEnabled: false }
+            : configuredCapabilities;
         const mode = manualRequest
           ? { localTools: true }
           : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
@@ -844,6 +855,7 @@ export function createChatGptWebAdapter(
           ? undefined
           : createChatGptStructuredOutputValidator(parsed.options.outputFormat);
         const bufferStructuredOutput = structuredOutputValidator !== undefined;
+        const copilotClientTools = parsed._copilotClientTools === true;
         const retryKey = `${executionNamespace}:${chatGptTurnRetryKey(parsed)}`;
         const exhaustedRetry = chatGptWebTurnRetryPolicy.exhaustedError(retryKey);
         if (exhaustedRetry) {
@@ -1148,7 +1160,6 @@ export function createChatGptWebAdapter(
         const ownerKey = `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`;
         const nativeIdentity = extractChatGptTurnIdentity(parsed);
         const nativeTurnId = nativeIdentity.turnId;
-        if (!nativeTurnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser ownership");
         const abortedTurnIds = manualRequest ? new Set(priorChatGptAbortedTurnIds(parsed)) : undefined;
         if (abortedTurnIds?.size) {
           chatGptTurnSessions.retireAbortedOwnerTurns(ownerKey, abortedTurnIds, executionKey);
@@ -1209,7 +1220,7 @@ export function createChatGptWebAdapter(
               } else {
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
                 if (replay.length === 0 && !parsed._compactionRequest) {
-                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
+                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, copilotClientTools, buffer));
                 }
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
                 if (!bufferStructuredOutput) {
@@ -1278,10 +1289,10 @@ export function createChatGptWebAdapter(
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
               };
               const emitNewText = (deltas: string[]) => {
-                if (!bufferStructuredOutput) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
+                if (!bufferStructuredOutput && !copilotClientTools) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
               };
               if (replay.length === 0 && !parsed._compactionRequest) {
-                emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
+                emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, copilotClientTools, buffer));
               }
               emitNewTrace(session.runtime.trace.drain());
               emitNewText(session.runtime.text.drain());
@@ -1329,6 +1340,31 @@ export function createChatGptWebAdapter(
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
                 }
                 structuredOutputValidator?.(completedOutcome.answer);
+                if (copilotClientTools) {
+                  // ChatGPT's Markdown habit of backslash-escaping underscores (e.g. "COPILOT\_OK")
+                  // also escapes the tag delimiters and any underscores inside the JSON payload;
+                  // undo that before matching and parsing, since JSON never uses "\_" as an escape.
+                  const unescapedAnswer = completedOutcome.answer.replace(/\\_/g, "_");
+                  const match = unescapedAnswer.match(/^\s*<copilot_tool_call_json>([\s\S]*?)<\/copilot_tool_call_json>\s*$/);
+                  if (match) {
+                    const call = JSON.parse(match[1]!) as { name?: unknown; arguments?: unknown };
+                    const tool = parsed.context.tools?.find(candidate => namespacedToolName(candidate.namespace, candidate.name) === call.name);
+                    if (!tool || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) {
+                      throw new Error("ChatGPT returned an invalid Copilot client tool request");
+                    }
+                    const callId = `call_${createHash("sha256").update(`${roundKey}:${completedOutcome.answer}`).digest("hex").slice(0, 20)}`;
+                    emitRoundBatch(buffer => emitToolBatch([{
+                      callId,
+                      wireName: call.name as string,
+                      freeform: false,
+                      arguments: call.arguments as Record<string, unknown>,
+                    }], estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning: roundReasoning, toolRequests: [] }, turnCapabilities, experimentalBiggerContext, experimentalSkillAttachments), buffer));
+                    session.completeRound(roundKey);
+                    chatGptWebTurnRetryPolicy.clear(retryKey);
+                    return;
+                  }
+                  emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
+                }
                 if (bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
                 }

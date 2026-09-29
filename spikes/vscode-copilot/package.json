@@ -1,0 +1,14 @@
+{
+  "name": "codex-chatgpt-web-vscode-spike",
+  "displayName": "ChatGPT Web VS Code Spike",
+  "version": "0.0.1",
+  "private": true,
+  "engines": { "vscode": "^1.139.1" },
+  "main": "./extension.js",
+  "activationEvents": ["onLanguageModelChatProvider:chatgpt-web-spike"],
+  "contributes": {
+    "languageModelChatProviders": [
+      { "vendor": "chatgpt-web-spike", "displayName": "ChatGPT Web Spike" }
+    ]
+  }
+}

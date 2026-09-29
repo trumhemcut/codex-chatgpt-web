@@ -22,9 +22,15 @@ export interface ChatGptWebPromptImage {
   detail?: string;
 }
 
+export interface ChatGptWebPromptFile {
+  filename: string;
+  fileData: string;
+}
+
 export interface CompiledChatGptWebPrompt {
   text: string;
   images: ChatGptWebPromptImage[];
+  files?: ChatGptWebPromptFile[];
   skillFiles?: ChatGptSkillFile[];
   /** Transactional transport when Bigger Context is explicitly enabled. */
   multipart?: ChatGptWebMultipartPrompt;
@@ -42,6 +48,8 @@ export interface CompileChatGptWebPromptOptions {
    * reads or mutates ChatGPT's DOM. Completion is accepted only through the bound Zero Risk MCP tools.
    */
   manualControl?: true;
+  /** Dedicated Copilot CLI route: expose client-owned tools as a strict text protocol. */
+  copilotClientTools?: boolean;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
@@ -199,17 +207,22 @@ interface ImageBudget {
 function inputContent(
   content: string | CodexContentPart[],
   images: ChatGptWebPromptImage[],
+  files: ChatGptWebPromptFile[],
   budget: ImageBudget,
 ): unknown {
   if (typeof content === "string") return content;
   const semantic = content.filter(part =>
     part.type !== "image" || !isOnePixelPngDataUrl(part.imageUrl)
   );
-  if (!semantic.some(part => part.type === "image")) {
+  if (!semantic.some(part => part.type === "image" || part.type === "file")) {
     return semantic.filter(part => part.type === "text").map(part => part.text).join("\n");
   }
   return semantic.map(part => {
     if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "file") {
+      files.push({ filename: part.filename, fileData: part.fileData });
+      return { type: "file_attachment", filename: part.filename };
+    }
     budget.seen += 1;
     if (budget.seen <= budget.dropped) return { type: "text", text: DROPPED_IMAGE_NOTE };
     const ref = `codex-input-image-${images.length + 1}`;
@@ -288,6 +301,7 @@ export function withoutSupersededModelSwitchContracts(messages: readonly CodexMe
 function messageEnvelope(
   message: CodexMessage,
   images: ChatGptWebPromptImage[],
+  files: ChatGptWebPromptFile[],
   budget: ImageBudget,
 ): Record<string, unknown> {
   if (message.role === "toolResult") {
@@ -297,7 +311,7 @@ function messageEnvelope(
       tool_name: message.toolName,
       ...(message.toolNamespace ? { tool_namespace: message.toolNamespace } : {}),
       is_error: message.isError,
-      content: inputContent(message.content, images, budget),
+      content: inputContent(message.content, images, files, budget),
     };
   }
   if (message.role === "agentMessage") {
@@ -305,7 +319,7 @@ function messageEnvelope(
       role: "agent_message",
       ...(message.author !== undefined ? { author: message.author } : {}),
       ...(message.recipient !== undefined ? { recipient: message.recipient } : {}),
-      content: inputContent(message.content, images, budget),
+      content: inputContent(message.content, images, files, budget),
     };
   }
   if (message.role === "assistant") {
@@ -315,7 +329,7 @@ function messageEnvelope(
       content: assistantContent(message.content),
     };
   }
-  return { role: message.role, content: inputContent(message.content, images, budget) };
+  return { role: message.role, content: inputContent(message.content, images, files, budget) };
 }
 
 type MultipartContextRecord =
@@ -434,6 +448,7 @@ export function compileChatGptWebPrompt(
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
+  const copilotClientTools = options?.copilotClientTools === true;
   const attachSkills = options?.experimentalSkillAttachments === true;
   if (attachSkills && (manualControl || isChatGptWebZeroRiskBackendModel(parsed.modelId))) {
     throw new Error("Skills as files is unavailable in Zero Risk mode");
@@ -505,6 +520,22 @@ export function compileChatGptWebPrompt(
       "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
       "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
+    : copilotClientTools
+    ? [
+      "GitHub Copilot CLI owns local tool execution and approval for this turn.",
+      "When a local tool is required, do not claim to have executed it. Return exactly one tool request using the protocol below and nothing else.",
+      "Tool request protocol: <copilot_tool_call_json>{\"name\":\"TOOL_NAME\",\"arguments\":{...}}</copilot_tool_call_json>",
+      "Use only a tool listed in <copilot_tools_json>. Arguments must be valid JSON matching that tool's schema.",
+      "After Copilot executes the tool, its result will appear in the supplied conversation history. Continue from that result and either request the next tool or return the final answer.",
+      "If no local tool is needed, return the final user-facing answer normally and do not emit the tool protocol.",
+      "<copilot_tools_json>",
+      JSON.stringify((parsed.context.tools ?? []).map(tool => ({
+        name: tool.namespace ? `${tool.namespace}__${tool.name}` : tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }))),
+      "</copilot_tools_json>",
+    ]
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
@@ -594,6 +625,7 @@ export function compileChatGptWebPrompt(
     ];
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
     const images: ChatGptWebPromptImage[] = [];
+    const files: ChatGptWebPromptFile[] = [];
     const budget: ImageBudget = {
       seen: 0,
       dropped: Math.max(0, countChatGptContextImages(sourceMessages) - CHATGPT_MAX_INPUT_IMAGES),
@@ -605,12 +637,15 @@ export function compileChatGptWebPrompt(
         if (!skillFiles.some(existing => existing.name === file.name)) skillFiles.push(file);
         return { role: "user", origin: "codex_skill", content: [{ type: "skill_attachment", filename: file.name }] };
       }
-      return messageEnvelope(message, images, budget);
+      return messageEnvelope(message, images, files, budget);
     });
     const skillContract = skillFiles.length ? [
       "Each skill_attachment refers to a named UTF-8 text file attached to this message (the final commit in multipart mode). Read its complete contents as the selected Codex skill instructions at the original user priority. These origin=codex_skill messages are supplied by Codex, not human-authored task requests. Preserve their original position in history and their path/resource authority for resolving references. If a file cannot be read, report that limitation; do not invent its contents.",
     ] : [];
-    const attachments = skillFiles.length ? { skillFiles } : {};
+    const attachments = {
+      ...(files.length ? { files } : {}),
+      ...(skillFiles.length ? { skillFiles } : {}),
+    };
     const answerContract = captureLunaCheckpoint
       ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
       : "Return only the answer that the outer Codex task should receive.";

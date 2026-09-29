@@ -1,0 +1,14 @@
+{
+  "name": "codex-chatgpt-web-vscode",
+  "displayName": "ChatGPT Web for Copilot Chat",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "vscode": "^1.139.1" },
+  "main": "./extension.js",
+  "activationEvents": ["onLanguageModelChatProvider:chatgpt-web"],
+  "contributes": {
+    "languageModelChatProviders": [
+      { "vendor": "chatgpt-web", "displayName": "ChatGPT Web" }
+    ]
+  }
+}

@@ -62,6 +62,9 @@ Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account
    that the existing private MCP credentials are reused rather than replaced.
 11. Upgrade from the previous public release and prove that launcher state, browser state, Codex
     settings, and MCP configuration survive the updater transaction.
+12. With GitHub Copilot CLI `1.0.79-9`, enable the optional provider integration and complete one streamed multi-turn repository task through the local Responses bridge. Exercise one harmless tool round using Copilot's native approval/tool execution and cancel one in-flight generation. Disable the integration and confirm no GitHub/Copilot credentials or persistent auth config were changed.
+13. With VS Code `1.139.1` and GitHub Copilot `0.67.0`, install/enable the `integrations/vscode-copilot` provider, select the ChatGPT Web model in the supported Copilot Chat surface, complete one streamed repository edit/tool round with normal VS Code approval UX, cancel one request, reload VS Code, and reconnect without changing ChatGPT browser credentials.
+14. Run Codex, Copilot CLI, and VS Code provider requests concurrently and verify each response/tool call returns only to its originating client. Record image input as Partial unless a real Copilot Chat image attachment is observed end to end.
 
 Any failed or unexecuted item blocks a stable release. An alpha may ship with a named failed item
 only when the release notes describe the limitation and recovery path explicitly.

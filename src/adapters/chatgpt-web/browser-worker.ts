@@ -2146,9 +2146,9 @@ export function chatGptImageFilePayloads(images: ChatGptWebPromptImage[]): Array
 }
 
 function assertChatGptPromptAttachments(prompt: CompiledChatGptWebPrompt): void {
-  if (prompt.images.length + (prompt.skillFiles?.length ?? 0) > CHATGPT_MAX_INPUT_IMAGES) {
+  if (prompt.images.length + (prompt.files?.length ?? 0) + (prompt.skillFiles?.length ?? 0) > CHATGPT_MAX_INPUT_IMAGES) {
     throw new ChatGptWebAdapterError(
-      "Selected skills and images exceed ChatGPT's 10 attachments per message; disable Skills as files or reduce attachments.",
+      "Files, selected skills, and images exceed ChatGPT's 10 attachments per message; reduce attachments.",
       { status: 400, errorType: "invalid_request_error", code: "too_many_attachments", retryable: false },
     );
   }
@@ -2159,7 +2159,17 @@ export function chatGptPromptFilePayloads(
   prompt: CompiledChatGptWebPrompt,
 ): Array<{ name: string; mimeType: string; buffer: Buffer }> {
   assertChatGptPromptAttachments(prompt);
-  const files = [...chatGptImageFilePayloads(prompt.images), ...(prompt.skillFiles ?? []).map(file => ({
+  const inputFiles = (prompt.files ?? []).map(file => {
+    const parsed = parseDataUrl(file.fileData);
+    if (!parsed) throw new Error(`ChatGPT web input file ${file.filename} must be an inline base64 data URL`);
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(parsed.base64) || parsed.base64.length % 4 !== 0) {
+      throw new Error(`ChatGPT web input file ${file.filename} contains invalid base64 data`);
+    }
+    const buffer = Buffer.from(parsed.base64, "base64");
+    if (buffer.length === 0) throw new Error(`ChatGPT web input file ${file.filename} is empty`);
+    return { name: file.filename, mimeType: parsed.mediaType.toLowerCase(), buffer };
+  });
+  const files = [...chatGptImageFilePayloads(prompt.images), ...inputFiles, ...(prompt.skillFiles ?? []).map(file => ({
     name: file.name, mimeType: "text/plain", buffer: Buffer.from(file.text, "utf8"),
   }))];
   if (files.reduce((sum, file) => sum + file.buffer.length, 0) > 50_000_000) {

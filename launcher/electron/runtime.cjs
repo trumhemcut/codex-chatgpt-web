@@ -444,6 +444,29 @@ class RuntimeHost {
     };
   }
 
+  async integrationStatus(target) {
+    this.assertProductionProfile("Integration status");
+    const result = await this.run(`integration-${target}-status`, ["integrations", "status", target], {
+      embedded: true,
+      message: `Checking ${target} integration`,
+      successMessage: `${target} integration checked`,
+      timeoutMs: 15_000,
+    });
+    return JSON.parse(result.stdout);
+  }
+
+  async setIntegration(target, enabled) {
+    this.assertProductionProfile("Integration setup");
+    if (target !== "copilot-cli" && target !== "vscode-copilot") throw new Error(`Unsupported integration: ${target}`);
+    await this.run(`integration-${target}-${enabled ? "setup" : "remove"}`, ["integrations", enabled ? "setup" : "remove", target], {
+      embedded: true,
+      message: `${enabled ? "Enabling" : "Disabling"} ${target} integration`,
+      successMessage: `${target} integration ${enabled ? "enabled" : "disabled"}`,
+      timeoutMs: 15_000,
+    });
+    return { enabled };
+  }
+
   mcpCredentialsConfigured(requestedMode) {
     const config = this.runtimeConfigSnapshot().config;
     const interactionMode = requestedMode ?? config?.browserInteractionMode ?? "automatic";

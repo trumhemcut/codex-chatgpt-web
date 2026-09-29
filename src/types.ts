@@ -7,6 +7,8 @@ export interface CodexParsedRequest {
   _rawBody?: unknown;
   /** Set only by the trusted Web route, never parsed from caller-supplied model metadata. */
   _chatgptModelFamily?: "5.6" | "6";
+  /** Set only by the dedicated Copilot CLI HTTP route. Copilot owns tool execution/approval. */
+  _copilotClientTools?: boolean;
   /** Number of leading raw input items restored from local previous_response_id state. */
   _replayPrefixLen?: number;
   /**
@@ -94,8 +96,14 @@ export interface CodexImageContent {
   detail?: string;
 }
 
-/** A user/developer message content part: text or an image (vision). */
-export type CodexContentPart = CodexTextContent | CodexImageContent;
+export interface CodexFileContent {
+  type: "file";
+  filename: string;
+  fileData: string;
+}
+
+/** A user/developer message content part: text, an image (vision), or an inline file attachment. */
+export type CodexContentPart = CodexTextContent | CodexImageContent | CodexFileContent;
 
 export interface CodexThinkingContent {
   type: "thinking";

@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   doctor: () => ipcRenderer.invoke("launcher:doctor"),
   cancelTurns: () => ipcRenderer.invoke("launcher:cancel-turns"),
   uninstallIntegration: () => ipcRenderer.invoke("launcher:uninstall-integration"),
+  integrationStatus: (target) => ipcRenderer.invoke("launcher:integration-status", target),
+  setIntegration: (target, enabled) => ipcRenderer.invoke("launcher:set-integration", target, enabled),
   setupCore: () => ipcRenderer.invoke("launcher:setup-core"),
   setupMcp: (input) => ipcRenderer.invoke("launcher:setup-mcp", input),
   setConnectorNameSuffix: (suffix) => ipcRenderer.invoke("launcher:connector-name", suffix),

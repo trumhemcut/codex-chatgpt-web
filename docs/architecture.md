@@ -1,7 +1,7 @@
 # Architecture
 
 ```text
-Codex app / CLI
+Codex / Copilot CLI / VS Code Copilot Chat
       │ Responses API on loopback
       ▼
 launcher-owned codex-chatgpt-web daemon
@@ -16,6 +16,10 @@ launcher-owned codex-chatgpt-web daemon
             ▼
       ChatGPT custom connector
 ```
+
+Codex keeps its existing route integration. Copilot CLI reaches the same `/v1/responses` endpoint through its documented custom provider environment variables. VS Code uses a small public language-model-provider extension that translates VS Code message parts and streamed tool calls to the same Responses endpoint. Client-owned tools, MCP execution, approval UX, and conversation history remain in Copilot/VS Code; the daemon does not add a second tool executor for them.
+
+The Copilot integrations are intentionally stateless at the client boundary. Their requests already carry the conversation and tool state required by the public APIs, so no generic client-routing layer or separate Native2 connector is introduced unless future protocol evidence requires it.
 
 ## Modes
 

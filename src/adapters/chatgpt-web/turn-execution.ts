@@ -172,6 +172,19 @@ function executionKey(parsed: CodexParsedRequest, payload: unknown): string {
   })).digest("hex");
 }
 
+function genericResponsesIdentity(parsed: CodexParsedRequest): unknown {
+  const body = parsed._rawBody;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("ChatGPT web generic Responses replay requires the complete request body");
+  }
+  return {
+    modelId: parsed.modelId,
+    reasoning: parsed.options.reasoning,
+    purpose: parsed._compactionRequest ? "compaction" : "response",
+    body,
+  };
+}
+
 function compactionInputRevision(parsed: CodexParsedRequest): unknown[] {
   const body = parsed._rawBody;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -186,7 +199,7 @@ function compactionInputRevision(parsed: CodexParsedRequest): unknown[] {
 
 export function chatGptTurnExecutionKey(parsed: CodexParsedRequest): string {
   const identity = extractChatGptTurnIdentity(parsed);
-  if (!identity.turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
+  if (!identity.turnId) return executionKey(parsed, genericResponsesIdentity(parsed));
   return executionKey(parsed, {
     threadId: identity.threadId,
     turnId: identity.turnId,
@@ -204,6 +217,10 @@ export interface ChatGptInstructionLineage {
 }
 
 export function chatGptInstructionLineage(parsed: CodexParsedRequest): ChatGptInstructionLineage {
+  if (!extractChatGptTurnIdentity(parsed).turnId) {
+    const current = createHash("sha256").update(JSON.stringify(genericResponsesIdentity(parsed))).digest("hex");
+    return { current, predecessors: new Set() };
+  }
   const revisions = chatGptTurnUserRevisionHistory(parsed).map(revision => createHash("sha256")
     .update(JSON.stringify([revision.itemId ?? null, revision.content])).digest("hex"));
   const current = revisions.pop();
@@ -214,7 +231,7 @@ export function chatGptInstructionLineage(parsed: CodexParsedRequest): ChatGptIn
 /** Exact canonical Responses request identity inside one long-lived browser execution. */
 export function chatGptTurnRoundKey(parsed: CodexParsedRequest): string {
   const identity = extractChatGptTurnIdentity(parsed);
-  if (!identity.turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for round replay");
+  if (!identity.turnId) return executionKey(parsed, genericResponsesIdentity(parsed));
   const body = parsed._rawBody;
   if (!body || typeof body !== "object" || Array.isArray(body)
     || !Array.isArray((body as { input?: unknown }).input)) {
@@ -231,7 +248,7 @@ export function chatGptTurnRoundKey(parsed: CodexParsedRequest): string {
 /** Stable identity for limiting automatic retries of one native Codex turn. */
 export function chatGptTurnRetryKey(parsed: CodexParsedRequest): string {
   const identity = extractChatGptTurnIdentity(parsed);
-  if (!identity.turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-turn retry budgeting");
+  if (!identity.turnId) return executionKey(parsed, genericResponsesIdentity(parsed));
   return createHash("sha256").update(JSON.stringify({
     threadId: identity.threadId,
     turnId: identity.turnId,
@@ -248,8 +265,7 @@ export function chatGptThreadOwnershipKey(parsed: CodexParsedRequest): string {
       ? { kind: "prompt_cache", id: identity.promptCacheKey }
       : identity.turnId
         ? { kind: "turn", id: identity.turnId }
-        : undefined;
-  if (!owner) throw new Error("ChatGPT web requires native Codex turn identity metadata for browser ownership");
+        : { kind: "request", id: executionKey(parsed, genericResponsesIdentity(parsed)) };
   return createHash("sha256").update(JSON.stringify(owner)).digest("hex");
 }
 

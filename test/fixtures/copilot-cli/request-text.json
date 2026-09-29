@@ -1,0 +1,28 @@
+{
+  "model": "gpt-5.6-sol",
+  "instructions": "[sanitized Copilot CLI instructions]",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "Reply exactly COPILOT_SPIKE_OK",
+          "type": "input_text"
+        }
+      ]
+    }
+  ],
+  "tools": [],
+  "text": {
+    "verbosity": "low"
+  },
+  "prompt_cache_key": "[sanitized]",
+  "max_output_tokens": 128000,
+  "store": false,
+  "stream": true,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "parallel_tool_calls": true
+}

@@ -6,7 +6,7 @@ import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup, saveConfig } from "./config";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -30,6 +30,7 @@ import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
+import { COPILOT_CLI_SUPPORTED_VERSION, assertCopilotCliConfigIsExternal, copilotCliShellSnippet, inspectCopilotCli } from "./copilot-cli-integration";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -42,6 +43,7 @@ Usage:
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
   codex-chatgpt-web subagents <status|compatibility-v1|native>
+  codex-chatgpt-web integrations <status|setup|remove> <copilot-cli|vscode-copilot>
   codex-chatgpt-web browser check
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
@@ -387,6 +389,48 @@ async function doctorCommand(args: string[]): Promise<void> {
   if (!report.ok) process.exitCode = 1;
 }
 
+async function integrationsCommand(args: string[]): Promise<void> {
+  const action = args.shift() ?? "status";
+  const target = args.shift() ?? "copilot-cli";
+  assertNoArgs(args);
+  if (target !== "copilot-cli" && target !== "vscode-copilot") throw new Error(`Unsupported integration target: ${target}`);
+  const config = loadConfigForSetup();
+  if (target === "vscode-copilot") {
+    if (action === "status") {
+      stdout.write(`${JSON.stringify({
+        enabled: config.integrations.vscodeCopilot.enabled,
+        provider: "chatgpt-web",
+        bridgeUrl: `http://${config.host}:${config.port}/v1/responses`,
+        wireModel: config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna",
+        packagePath: new URL("../integrations/vscode-copilot", import.meta.url).pathname,
+      }, null, 2)}\n`);
+      return;
+    }
+    if (action !== "setup" && action !== "remove") throw new Error(`Unknown integrations action: ${action}`);
+    config.integrations.vscodeCopilot.enabled = action === "setup";
+    saveConfig(config);
+    stdout.write(`VS Code Copilot integration ${action === "setup" ? "enabled" : "disabled"}.\n`);
+    return;
+  }
+  if (action === "status") {
+    stdout.write(`${JSON.stringify(inspectCopilotCli(config), null, 2)}\n`);
+    return;
+  }
+  if (action !== "setup" && action !== "remove") throw new Error(`Unknown integrations action: ${action}`);
+  assertCopilotCliConfigIsExternal();
+  config.integrations.copilotCli.enabled = action === "setup";
+  saveConfig(config);
+  if (action === "setup") {
+    const status = inspectCopilotCli(config);
+    stdout.write(`Copilot CLI integration enabled. Supported version: ${COPILOT_CLI_SUPPORTED_VERSION}.\n`);
+    stdout.write(`${copilotCliShellSnippet(config)}\n`);
+    if (!status.detected) process.stderr.write("Copilot CLI was not detected on PATH.\n");
+    else if (!status.compatible) process.stderr.write(`Detected Copilot CLI ${status.version}; validated baseline is ${COPILOT_CLI_SUPPORTED_VERSION}.\n`);
+  } else {
+    stdout.write("Copilot CLI integration disabled. No Copilot or GitHub configuration was modified.\n");
+  }
+}
+
 async function routeCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
@@ -583,6 +627,7 @@ async function main(): Promise<void> {
   else if (command === "doctor" || command === "status") await doctorCommand(args);
   else if (command === "route") await routeCommand(args);
   else if (command === "subagents") await subagentsCommand(args);
+  else if (command === "integrations") await integrationsCommand(args);
   else if (command === "browser") {
     const action = args.shift();
     assertNoArgs(args);

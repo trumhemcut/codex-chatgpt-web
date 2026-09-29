@@ -19,6 +19,12 @@ editing Codex configuration, or opening a new issue.
 Do not repeatedly press setup actions after they report success. The exact error and a fresh safe
 log are more useful than another reinstall.
 
+## Copilot integrations
+
+**GitHub Copilot CLI:** the validated Windows baseline is `1.0.79-9`. Enable the integration in launcher Settings, then start Copilot with the provider environment variables printed by `codex-chatgpt-web integrations setup copilot-cli`. The project does not modify `~/.copilot` or GitHub authentication. If the CLI reports it cannot connect to the local model provider, confirm the launcher/runtime is running and that the provider base URL points to `http://127.0.0.1:17841/v1`.
+
+**VS Code Copilot Chat:** use VS Code `1.139.1` with the public language-model-provider surface and the extension package under `integrations/vscode-copilot`. Enable the integration in launcher Settings. If the provider reports that the local bridge is unavailable, start the launcher/runtime and retry. Custom model availability can still be restricted by Copilot plan or enterprise policy. Image input remains partial until the Copilot Chat provider path is live-proven with an actual image attachment.
+
 ## Models do not appear, or setup remains on step 3
 
 **Install models** updates the Codex route, but a running Codex process keeps its old model catalog.

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
@@ -19,7 +19,7 @@ import {
 } from "../src/adapters/chatgpt-web/native-compaction-control";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
-import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
@@ -298,6 +298,18 @@ describe("ChatGPT outer-native harness v4", () => {
       turnId: "turn_test_123",
       promptCacheKey: "thread_test_123",
     });
+  });
+
+  test("uses canonical request identity for generic Responses clients without native Codex metadata", () => {
+    const request = parseRequest(JSON.parse(readFileSync("test/fixtures/copilot-cli/request-text.json", "utf8")));
+    const replay = parseRequest(JSON.parse(readFileSync("test/fixtures/copilot-cli/request-text.json", "utf8")));
+
+    expect(extractChatGptTurnIdentity(request).turnId).toBeUndefined();
+    expect(chatGptTurnExecutionKey(request)).toBe(chatGptTurnExecutionKey(replay));
+    expect(chatGptTurnRoundKey(request)).toBe(chatGptTurnRoundKey(replay));
+    expect(chatGptTurnRetryKey(request)).toBe(chatGptTurnRetryKey(replay));
+    expect(chatGptThreadOwnershipKey(request)).toBe(chatGptThreadOwnershipKey(replay));
+    expect(chatGptInstructionLineage(request).current).toBe(chatGptInstructionLineage(replay).current);
   });
 
   test("accepts adjacent native turn provenance when Codex omits top-level client_metadata", () => {
@@ -837,7 +849,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(chatGptTurnExecutionKey(laterCompact)).not.toBe(chatGptTurnExecutionKey(newCompactTurn));
     expect(chatGptCompactionSourceExecutionKey(laterCompact)).toBe(chatGptTurnExecutionKey(first));
     expect(chatGptThreadOwnershipKey(laterCompact)).toBe(chatGptThreadOwnershipKey(first));
-    expect(() => chatGptTurnExecutionKey(parsed(environmentXml))).toThrow("requires native Codex turn_id metadata");
+    expect(() => chatGptTurnExecutionKey(parsed(environmentXml))).toThrow("generic Responses replay requires the complete request body");
   });
 
   test("coalesces provider retries onto one browser runtime and preserves outstanding calls", () => {

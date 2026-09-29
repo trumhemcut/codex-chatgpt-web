@@ -24,7 +24,9 @@
   <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
-Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
+Use the ChatGPT Web models available on your account from supported coding clients through one launcher-owned runtime. Codex remains the default integration; GitHub Copilot CLI and VS Code Copilot Chat can opt in to the same local Responses bridge.
+
+Copilot CLI support uses its documented Custom Model Provider/BYOK route. VS Code support uses the public Language Model Chat Provider API through the thin extension in `integrations/vscode-copilot`. Neither integration copies GitHub credentials or ChatGPT browser credentials.
 
 Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
 
@@ -38,6 +40,8 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 2. **Sign in to ChatGPT** in the embedded browser and run the browser smoke test.
 3. **Install models** and restart Codex once. In automatic mode, choose a model ending in **(Web)**. Pro versions have separate entries; Sol reasoning is selected through Effort. Zero Risk keeps its dedicated entry.
 4. **For coding with tools**, open **MCP** in the launcher and complete the Full harness setup below.
+
+Optional Copilot integrations are disabled by default. In **Settings**, enable **GitHub Copilot CLI** or **VS Code Copilot Chat** after the shared runtime is healthy. The validated baselines are Copilot CLI `1.0.79-9` on Windows and VS Code `1.139.1` with GitHub Copilot `0.67.0`.
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 

@@ -1,0 +1,8 @@
+{
+  "accept": "application/json",
+  "authorization": "Bearer [redacted-or-empty]",
+  "content-type": "application/json",
+  "user-agent": "OpenAI/JS 5.20.1",
+  "x-initiator": "user",
+  "x-interaction-type": "conversation-user"
+}

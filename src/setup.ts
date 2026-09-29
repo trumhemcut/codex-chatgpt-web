@@ -64,6 +64,7 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  integrations?: Partial<AppConfig["integrations"]>;
 }
 
 export interface SetupResult {
@@ -72,7 +73,7 @@ export interface SetupResult {
   loginCreated: boolean;
   serviceLoaded: boolean;
   tunnelReady: boolean | null;
-  codexRestartRequired: true;
+  codexRestartRequired: boolean;
   connectorSetupRequired: boolean;
 }
 
@@ -254,6 +255,9 @@ function baseConfig(
   profile: "production" | "development" = "production",
 ): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
+  if (options.integrations) {
+    config.integrations = { ...config.integrations, ...options.integrations };
+  }
   config.mode = options.mode;
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
   Object.assign(config, resolveInteractionConnectorIdentities(
@@ -489,16 +493,20 @@ export function preflightSetup(options: SetupOptions): void {
       throw new Error("Automatic and Zero Risk require different Tunnel IDs and separate ChatGPT connectors");
     }
   }
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (config.integrations.codex.enabled) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 }
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
   const { existing, config, launcherOwned } = prepareSetup(options);
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (config.integrations.codex.enabled) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
   const beforeService = getServiceStatus();
@@ -638,9 +646,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     launcherOwned && existing && existing.browserHost !== "launcher",
   );
   if (!migratingTerminalRuntime) removeLegacyRuntimeArtifacts(config);
-  installCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (config.integrations.codex.enabled) {
+    installCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 
   return {
     mode: config.mode,
@@ -648,7 +658,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     loginCreated,
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
     tunnelReady,
-    codexRestartRequired: true,
+    codexRestartRequired: config.integrations.codex.enabled,
     connectorSetupRequired: config.mode === "full",
   };
 }

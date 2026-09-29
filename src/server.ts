@@ -360,6 +360,8 @@ export interface ResponseRequestOptions {
   onAdapterEvent?: (event: AdapterEvent) => void;
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
+  /** Trusted server-side marker for the dedicated Copilot CLI client-owned tool route. */
+  copilotClientTools?: boolean;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -521,6 +523,7 @@ export async function responseRequest(
   try {
     parsed = parseRequest(expanded);
     route = routeChatGptWebRequest(parsed, config);
+    if (options.copilotClientTools) parsed._copilotClientTools = true;
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {
       options.onTurnIdentity?.({ threadId: identity.threadId, turnId: identity.turnId });
@@ -1006,7 +1009,12 @@ export function startServer(
         setTimeout(shutdown, 0);
         return Response.json({ status: "ok", accepting_turns: false, ...current });
       }
-      if (req.method === "GET" && url.pathname === "/v1/models") {
+      if (req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/copilot/v1/models")) {
+        if (url.pathname === "/copilot/v1/models"
+          && !config.integrations.copilotCli.enabled
+          && !config.integrations.vscodeCopilot.enabled) {
+          return formatErrorResponse(404, "invalid_request_error", "Copilot CLI integration is disabled");
+        }
         if (draining) {
           return formatErrorResponse(
             503,
@@ -1070,6 +1078,25 @@ export function startServer(
             config,
             dependencies.adapterFactory,
             { onTurnIdentity: bindIdentity },
+          ),
+          req.signal,
+          process.platform,
+          "responses",
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/copilot/v1/responses") {
+        // Shared by GitHub Copilot CLI and the VS Code Copilot extension: both own their local
+        // tool execution/approval and need the client-tools prompt contract this route enables.
+        if (!config.integrations.copilotCli.enabled && !config.integrations.vscodeCopilot.enabled) {
+          return formatErrorResponse(404, "invalid_request_error", "Copilot CLI integration is disabled");
+        }
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        return httpTurns.track(
+          (signal, bindIdentity) => responseRequest(
+            new Request(req, { signal }),
+            config,
+            dependencies.adapterFactory,
+            { onTurnIdentity: bindIdentity, copilotClientTools: true },
           ),
           req.signal,
           process.platform,

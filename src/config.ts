@@ -132,6 +132,11 @@ export interface AppConfig {
   tunnel?: TunnelConfig;
   automaticTunnel?: TunnelConfig;
   manualTunnel?: TunnelConfig;
+  integrations: {
+    codex: { enabled: boolean };
+    copilotCli: { enabled: boolean; modelId?: string; wireModel?: string };
+    vscodeCopilot: { enabled: boolean };
+  };
 }
 
 export function tunnelConfigForInteractionMode(
@@ -257,6 +262,11 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
+    integrations: {
+      codex: { enabled: true },
+      copilotCli: { enabled: false },
+      vscodeCopilot: { enabled: false },
+    },
   };
 }
 
@@ -409,6 +419,16 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
+  const integrations = parsed.integrations ?? {
+    codex: { enabled: true },
+    copilotCli: { enabled: false },
+    vscodeCopilot: { enabled: false },
+  };
+  for (const [name, integration] of Object.entries(integrations)) {
+    if (!integration || typeof integration !== "object" || typeof (integration as { enabled?: unknown }).enabled !== "boolean") {
+      throw new Error(`Invalid integrations.${name} in ${path}`);
+    }
+  }
   if (parsed.purpose !== undefined && parsed.purpose !== "dev-harness") {
     throw new Error(`Invalid configuration purpose in ${path}`);
   }
@@ -584,6 +604,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     experimentalFreshConversationPerTurn,
     useSavedChats,
     zeroRiskProEnabled,
+    integrations,
   } as AppConfig;
 }
 

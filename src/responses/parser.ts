@@ -25,7 +25,7 @@ type InputBlock =
   | { type: "input_text"; text: string }
   | { type: "text"; text: string }
   | { type: "input_image"; image_url?: string; file_id?: string; detail?: string }
-  | { type: "input_file"; file_id?: string; filename?: string };
+  | { type: "input_file"; file_id?: string; filename?: string; file_data?: string };
 
 function inputContentParts(blocks: unknown[] | string | undefined): string | CodexContentPart[] {
   if (typeof blocks === "string") return blocks;
@@ -45,8 +45,9 @@ function inputContentParts(blocks: unknown[] | string | undefined): string | Cod
         parts.push({ type: "text", text: `[image: ${b.file_id ?? "?"}]` }); // file_id ref → no inline data
       }
     } else if (block.type === "input_file") {
-      const ref = (block as { file_id?: string; filename?: string }).file_id ?? (block as { filename?: string }).filename ?? "?";
-      parts.push({ type: "text", text: `[file: ${ref}]` });
+      const b = block as { file_id?: string; filename?: string; file_data?: string };
+      if (b.file_data && b.filename) parts.push({ type: "file", filename: b.filename, fileData: b.file_data });
+      else parts.push({ type: "text", text: `[file: ${b.file_id ?? b.filename ?? "?"}]` });
     }
   }
   // Collapse to a plain string only for a single TEXT part; images must stay structured.
