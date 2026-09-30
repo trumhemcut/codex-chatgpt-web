@@ -160,6 +160,33 @@ raw JSON our server returned.
    printed as text instead of executed as a tool call. Fixed by stripping
    `\_` → `_` from the answer before matching/parsing it.
 
+3. ChatGPT's Markdown rendering also backslash-escapes `*` and `\` itself
+   (CommonMark escapable punctuation), so a JSON `\n` arrives as `\\n` and an
+   `apply_patch` header `*** Begin Patch` as `\*\*\* Begin Patch`. Fixed by
+   unescaping `\_`, `\*`, `\\` before matching the tag.
+4. Tool-call JSON slips are repaired in `parseCopilotToolCallJson`
+   (`src/adapters/chatgpt-web/index.ts`): stray trailing `}` (retry loop),
+   unescaped Windows-path backslashes (`escapeUnescapedBackslashes`, a manual
+   scan so `\\` pairs are consumed as a unit), and unescaped inner quotes in
+   string args (e.g. `python -c '{"a":1}'`), handled by
+   `parseToolCallWithSchema`, which anchors on the tool's own schema keys
+   (`,"<key>":`) instead of guessing string boundaries. If nothing parses, the
+   raw answer is emitted as text rather than throwing (a throw mid-SSE shows up
+   as a silent "no response" in VS Code / Copilot CLI).
+5. A very large prompt (> ~100K chars, e.g. VS Code's full tool catalog) can
+   make ChatGPT's Lexical composer duplicate text on `execCommand("insertText")`
+   (`prompt_attachment_integrity` in `launcher.jsonl`). `attachPromptWithIntegrityRetry`
+   in `browser-worker.ts` now clears the composer and re-attaches once for every
+   turn, not just compaction turns.
+
+Debugging tip: `launcher.jsonl` lives in `%APPDATA%\Codex Web GPT\logs\`
+(not under `~/.codex-chatgpt-web`). Browser turn diagnostics there only hold DOM
+stats, not answer text; to see the raw answer, temporarily append
+`completedOutcome.answer` to a file inside the `copilotClientTools` branch of
+`finishBrowserOutcome` and remove it afterwards. Never run a self-test while a
+live VS Code/Copilot session is active: all turns share one ChatGPT tab and
+collide.
+
 ## DEV harness (not for Copilot CLI testing)
 
 `bun run src/cli.ts dev launcher` / `dev setup --browser-only

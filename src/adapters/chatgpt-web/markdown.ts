@@ -307,14 +307,17 @@ export class ChatGptMarkdownBuffer {
       const committedIndex = this.committedIndex(segment);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
-        if (sawPending || committedIndex < highestCommittedIndex || committed.text !== segment.text) {
-          return this.changedCommittedBlockError(
-            sawPending || committedIndex < highestCommittedIndex ? "block_order_changed" : "text_changed",
-            segment,
-            committed,
-          );
+        if (committed.text !== segment.text) {
+          return this.changedCommittedBlockError("text_changed", segment, committed);
         }
-        highestCommittedIndex = committedIndex;
+        // Identical text that merely shows up in a different position (ChatGPT re-indexes
+        // range-less blocks while hydrating) is already streamed; skipping it is harmless.
+        // Source-ranged blocks keep the strict order check.
+        if ((sawPending || committedIndex < highestCommittedIndex)
+          && (segment.sourceStart !== undefined || committed.sourceStart !== undefined)) {
+          return this.changedCommittedBlockError("block_order_changed", segment, committed);
+        }
+        highestCommittedIndex = Math.max(highestCommittedIndex, committedIndex);
         // Link destinations are answer content even when textContent remains identical.
         // Cosmetic DOM/formatting hydration still does not invalidate a committed paragraph.
         if (JSON.stringify(committed.linkTargets ?? []) !== JSON.stringify(segment.linkTargets ?? [])) {

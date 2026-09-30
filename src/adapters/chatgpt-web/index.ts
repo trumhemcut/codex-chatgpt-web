@@ -17,7 +17,7 @@ import {
   type LauncherManualTurnOwner,
   type LauncherManualTurnStart,
 } from "../../launcher-browser-host";
-import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
+import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexTool, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
@@ -243,6 +243,109 @@ function brokerResult(message: CodexToolResultMessage): BrokerToolResult {
     ...(structured !== undefined ? { structuredContent: structured } : {}),
     ...(message.isError ? { isError: true } : {}),
   };
+}
+
+// A Windows path written into the tool-call JSON (e.g. in an apply_patch "input")
+// commonly carries raw backslashes the model never escaped for JSON, like
+// "c:\Users\...": "\U" and "\p" are not valid JSON escapes and fail JSON.parse
+// outright. Double any backslash that isn't already starting a real JSON escape.
+// A manual scan (not a global regex replace) is required so that an already-valid
+// two-character escape pair (e.g. "\\" before "main.py") is consumed as a unit --
+// a regex re-examining its second backslash independently would triple it instead.
+function escapeUnescapedBackslashes(text: string): string {
+  let result = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (next !== undefined && /["\\/bfnrtu]/.test(next)) {
+        result += ch + next;
+        i++;
+      } else {
+        result += "\\\\";
+      }
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+
+// The model often embeds quoted code (a shell `-Command "..."`, a python -c one-liner
+// with "key": value pairs) inside a JSON string argument without escaping the inner
+// quotes. No local heuristic can tell those quotes from a real string boundary, but
+// the tool's own schema names every argument, so anchor on `,"<key>":` markers and
+// treat everything between two anchors as that argument's raw value.
+function escapeBareQuotes(interior: string): string {
+  let result = "";
+  for (let i = 0; i < interior.length; i++) {
+    const ch = interior[i]!;
+    if (ch === "\\" && i + 1 < interior.length) {
+      result += ch + interior[i + 1];
+      i++;
+    } else {
+      result += ch === "\"" ? "\\\"" : ch;
+    }
+  }
+  return result;
+}
+
+function parseToolCallWithSchema(
+  raw: string,
+  tools: readonly CodexTool[],
+): { name: string; arguments: Record<string, unknown> } | undefined {
+  const text = escapeUnescapedBackslashes(raw);
+  const head = text.match(/^\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*\{/);
+  if (!head) return undefined;
+  const name = head[1]!;
+  const tool = tools.find(candidate => namespacedToolName(candidate.namespace, candidate.name) === name);
+  const properties = (tool?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties;
+  if (!properties) return undefined;
+  const body = text.slice(head[0].length);
+  const anchors: { key: string; index: number; valueStart: number }[] = [];
+  for (const key of Object.keys(properties)) {
+    const marker = new RegExp(`(?:^|,)\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:`).exec(body);
+    if (marker) anchors.push({ key, index: marker.index, valueStart: marker.index + marker[0].length });
+  }
+  if (anchors.length === 0) return undefined;
+  anchors.sort((a, b) => a.index - b.index);
+  const args: Record<string, unknown> = {};
+  for (let i = 0; i < anchors.length; i++) {
+    const anchor = anchors[i]!;
+    const last = i + 1 === anchors.length;
+    let value = body.slice(anchor.valueStart, last ? body.length : anchors[i + 1]!.index).trim();
+    if (last) value = value.replace(/[\s}]+$/, "");
+    try {
+      args[anchor.key] = value.length >= 2 && value.startsWith("\"") && value.endsWith("\"")
+        ? JSON.parse(`"${escapeBareQuotes(value.slice(1, -1))}"`)
+        : JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return { name, arguments: args };
+}
+
+// ChatGPT occasionally emits one stray extra closing brace at the end of an
+// otherwise-valid <copilot_tool_call_json> payload (e.g. "...} } }" where two
+// braces would balance). Retry parsing after stripping one trailing "}" at a
+// time rather than failing the whole turn on an LLM JSON slip; when that still
+// fails, fall back to schema-anchored extraction for unescaped inner quotes.
+function parseCopilotToolCallJson(
+  raw: string,
+  tools: readonly CodexTool[],
+): { name?: unknown; arguments?: unknown } | undefined {
+  let text = escapeUnescapedBackslashes(raw);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return JSON.parse(text) as { name?: unknown; arguments?: unknown };
+    } catch {
+      text = text.trimEnd();
+      if (!text.endsWith("}")) break;
+      text = text.slice(0, -1);
+    }
+  }
+  return parseToolCallWithSchema(raw, tools);
 }
 
 function emitToolBatch(requests: BrokerToolRequest[], usage: CodexUsage, emit: (event: AdapterEvent) => void): void {
@@ -1341,17 +1444,20 @@ export function createChatGptWebAdapter(
                 }
                 structuredOutputValidator?.(completedOutcome.answer);
                 if (copilotClientTools) {
-                  // ChatGPT's Markdown habit of backslash-escaping underscores (e.g. "COPILOT\_OK")
-                  // also escapes the tag delimiters and any underscores inside the JSON payload;
-                  // undo that before matching and parsing, since JSON never uses "\_" as an escape.
-                  const unescapedAnswer = completedOutcome.answer.replace(/\\_/g, "_");
+                  // ChatGPT's Markdown habit of backslash-escaping "_", "*", and "\" itself (CommonMark
+                  // treats all three as escapable punctuation) corrupts the tag delimiters and any such
+                  // characters inside the JSON payload -- including a JSON "\n" escape, whose own
+                  // backslash gets doubled into "\\n", and an apply_patch body's "*** Begin Patch"
+                  // header, rendered as "\*\*\* Begin Patch". Undo all three before matching and
+                  // parsing: JSON never uses "\_" or "\*" as escapes, and unescaping "\\" back to "\"
+                  // first is what turns a corrupted "\\n" back into a real "\n" newline escape.
+                  const unescapedAnswer = completedOutcome.answer.replace(/\\([_*\\])/g, "$1");
                   const match = unescapedAnswer.match(/^\s*<copilot_tool_call_json>([\s\S]*?)<\/copilot_tool_call_json>\s*$/);
-                  if (match) {
-                    const call = JSON.parse(match[1]!) as { name?: unknown; arguments?: unknown };
-                    const tool = parsed.context.tools?.find(candidate => namespacedToolName(candidate.namespace, candidate.name) === call.name);
-                    if (!tool || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) {
-                      throw new Error("ChatGPT returned an invalid Copilot client tool request");
-                    }
+                  const call = match ? parseCopilotToolCallJson(match[1]!, parsed.context.tools ?? []) : undefined;
+                  const tool = call
+                    ? parsed.context.tools?.find(candidate => namespacedToolName(candidate.namespace, candidate.name) === call.name)
+                    : undefined;
+                  if (tool && call && call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)) {
                     const callId = `call_${createHash("sha256").update(`${roundKey}:${completedOutcome.answer}`).digest("hex").slice(0, 20)}`;
                     emitRoundBatch(buffer => emitToolBatch([{
                       callId,
@@ -1363,6 +1469,10 @@ export function createChatGptWebAdapter(
                     chatGptWebTurnRetryPolicy.clear(retryKey);
                     return;
                   }
+                  // Unparseable JSON (ChatGPT occasionally emits an extra stray brace) or an
+                  // unrecognized/malformed tool request: surface the raw answer as text instead of
+                  // throwing mid-stream, which would abort the SSE response with nothing sent and
+                  // show as a silent "no response" to the client.
                   emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
                 }
                 if (bufferStructuredOutput) {

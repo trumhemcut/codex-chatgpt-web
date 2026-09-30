@@ -130,6 +130,8 @@ export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
+// Must stay below CHATGPT_COMPLETION_ACTION_GRACE_MS so it wins over the DOM-health failure.
+export const CHATGPT_ACTIONLESS_COMPLETION_MS = 20_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
@@ -1494,6 +1496,7 @@ export class ChatGptCompletionTracker {
   constructor(
     private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
     private readonly missingPostToolAnswerMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+    private readonly actionlessMs = CHATGPT_ACTIONLESS_COMPLETION_MS,
   ) {}
 
   needsToolBatchObservation(revision: number): boolean {
@@ -1542,7 +1545,12 @@ export class ChatGptCompletionTracker {
       return false;
     }
     this.missingPostToolAnswerSince = undefined;
-    if (!chatGptTurnIsComplete(state)) {
+    // ChatGPT sometimes leaves the turn stuck on "Thinking" with the full answer rendered, Stop
+    // hidden and no copy/action row ever attached. Identical text for ACTIONLESS ms is accepted as done.
+    const actionless = !chatGptTurnIsComplete(state)
+      && state.responsePresent && !state.running && state.currentText.length > 0
+      && !state.completionActionVisible;
+    if (!chatGptTurnIsComplete(state) && !actionless) {
       this.candidate = undefined;
       return false;
     }
@@ -1550,7 +1558,7 @@ export class ChatGptCompletionTracker {
       this.candidate = { signature, since: now };
       return false;
     }
-    return now - this.candidate.since >= this.stableMs;
+    return now - this.candidate.since >= (actionless ? this.actionlessMs : this.stableMs);
   }
 }
 
@@ -3814,7 +3822,7 @@ export class ChatGptBrowserWorker {
     }
   }
 
-  private async resetCompactionComposerForRetry(
+  private async resetComposerForIntegrityRetry(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
     abortSignal?: AbortSignal,
@@ -3823,7 +3831,7 @@ export class ChatGptBrowserWorker {
     const before = await this.currentSubmissionEvidence(page, baseline, abortSignal);
     if (before) {
       throw new ChatGptPromptAttachmentIntegrityError(
-        "ChatGPT changed while the compaction prompt was being prepared. Check the ChatGPT tab before retrying.",
+        "ChatGPT changed while the prompt was being prepared. Check the ChatGPT tab before retrying.",
         new Error(`Submission evidence appeared after prompt attachment failed: ${before}`),
       );
     }
@@ -3837,23 +3845,28 @@ export class ChatGptBrowserWorker {
     const after = await this.currentSubmissionEvidence(page, baseline, abortSignal);
     if (after) {
       throw new ChatGptPromptAttachmentIntegrityError(
-        "ChatGPT changed while the compaction prompt was being reset. Check the ChatGPT tab before retrying.",
+        "ChatGPT changed while the prompt was being reset. Check the ChatGPT tab before retrying.",
         new Error(`Submission evidence appeared while resetting the prompt: ${after}`),
       );
     }
     const observed = await this.attachedPromptText(page, abortSignal);
     if (observed.length > 0) {
       throw new ChatGptPromptAttachmentIntegrityError(
-        `ChatGPT composer could not reset cleanly for compaction retry (actualChars=${observed.length})`,
+        `ChatGPT composer could not reset cleanly for an integrity retry (actualChars=${observed.length})`,
       );
     }
   }
 
-  private async attachPromptWithCompactionRetry(
+  // A very large single-shot prompt (a long compaction transcript, or a large
+  // <copilot_tools_json> tool catalog for VS Code/Copilot CLI) can hit a ChatGPT
+  // Lexical composer bug where execCommand("insertText") duplicates chunks of the
+  // inserted text instead of replacing the field, caught by assertPromptAttached's
+  // exact-length check. One clean clear-and-reattach recovers reliably in practice,
+  // so this always gets one retry regardless of why the prompt got this large.
+  private async attachPromptWithIntegrityRetry(
     page: Page,
     prompt: string,
     localTools: boolean,
-    compaction: boolean,
     baseline: ChatGptSubmissionBaseline,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
@@ -3862,7 +3875,7 @@ export class ChatGptBrowserWorker {
     reuseConnector = false,
     requireThink = false,
   ): Promise<void> {
-    let retryAvailable = compaction;
+    let retryAvailable = true;
     for (;;) {
       try {
         await this.attachPrompt(
@@ -3883,12 +3896,12 @@ export class ChatGptBrowserWorker {
         const evidence = await this.currentSubmissionEvidence(page, baseline, abortSignal);
         if (evidence) {
           throw new ChatGptPromptAttachmentIntegrityError(
-            "ChatGPT changed while the compaction prompt was being prepared. Check the ChatGPT tab before retrying.",
+            "ChatGPT changed while the prompt was being prepared. Check the ChatGPT tab before retrying.",
             new Error(`Prompt attachment failed before submission evidence appeared: ${evidence}`, { cause: error }),
           );
         }
         await captureDiagnostic?.("prompt-attachment-integrity-retry");
-        await this.resetCompactionComposerForRetry(page, baseline, abortSignal);
+        await this.resetComposerForIntegrityRetry(page, baseline, abortSignal);
       }
     }
   }
@@ -5142,11 +5155,10 @@ export class ChatGptBrowserWorker {
               const promptAbortSignal = turn.abortSignal
                 ? AbortSignal.any([stageSignal, turn.abortSignal])
                 : stageSignal;
-              return this.attachPromptWithCompactionRetry(
+              return this.attachPromptWithIntegrityRetry(
                 page,
                 finalPrompt,
                 mode.localTools,
-                turn.compaction === true,
                 submissionBaseline,
                 checkpoint => diagnostics.capture(page, checkpoint),
                 promptAbortSignal,
@@ -5343,7 +5355,19 @@ export class ChatGptBrowserWorker {
                 { cause: error },
               );
             }
-            await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
+            // A hung renderer usually recovers after ~30s, past one rebind's own timeouts (stage or
+            // operational-viewport). Retry a few times before giving up the turn.
+            for (let rebindTry = 1; ; rebindTry += 1) {
+              try {
+                await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
+                break;
+              } catch (rebindError) {
+                const message = rebindError instanceof Error ? rebindError.message : String(rebindError);
+                if (turn.abortSignal?.aborted || rebindTry >= 3
+                  || !/stage timed out|operational viewport/.test(message)) throw rebindError;
+                await new Promise(resolveSleep => setTimeout(resolveSleep, 5_000));
+              }
+            }
             submissionBaseline = {
               ...submissionBaseline,
               userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),

@@ -526,6 +526,7 @@ export function compileChatGptWebPrompt(
       "When a local tool is required, do not claim to have executed it. Return exactly one tool request using the protocol below and nothing else.",
       "Tool request protocol: <copilot_tool_call_json>{\"name\":\"TOOL_NAME\",\"arguments\":{...}}</copilot_tool_call_json>",
       "Use only a tool listed in <copilot_tools_json>. Arguments must be valid JSON matching that tool's schema.",
+      "Escape every double quote and backslash that appears inside a string argument (for example a shell command containing quoted text or a Windows path) as \\\" and \\\\ respectively, so the surrounding JSON stays syntactically valid. An unescaped quote inside a string argument breaks the whole tool request.",
       "After Copilot executes the tool, its result will appear in the supplied conversation history. Continue from that result and either request the next tool or return the final answer.",
       "If no local tool is needed, return the final user-facing answer normally and do not emit the tool protocol.",
       "<copilot_tools_json>",

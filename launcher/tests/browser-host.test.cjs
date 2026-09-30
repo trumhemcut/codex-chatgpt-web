@@ -2962,7 +2962,7 @@ test("a completed connector turn without binding is released instead of retained
   assert.equal(closed, true);
 });
 
-test("failed and aborted browser turns release their tab slots", async () => {
+test("aborted browser turns release their tab slot and failed ones are kept", async () => {
   for (const status of ["failed", "aborted"]) {
     let closed = false;
     const tab = {
@@ -3000,10 +3000,12 @@ test("failed and aborted browser turns release their tab slots", async () => {
       `turn ${status}`,
     );
 
-    assert.equal(fixture.turnTabs.size, 0);
-    assert.equal(fixture.selectedTabId, "home");
+    // A failed turn's page is kept for inspection; an aborted one is released.
+    const kept = status === "failed";
+    assert.equal(fixture.turnTabs.size, kept ? 1 : 0);
+    assert.equal(fixture.selectedTabId, kept ? tab.id : "home");
     assert.equal(tab.status, status === "aborted" ? "aborted" : "error");
-    assert.equal(closed, true);
+    assert.equal(closed, !kept);
   }
 });
 

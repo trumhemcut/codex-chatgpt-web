@@ -747,9 +747,9 @@ class BrowserHost {
 
   evictOldestReclaimableTurnTab() {
     const terminalManual = [...this.turnTabs.values()]
-      .filter(tab => tab.interactionMode === "manual"
-        && tab.status === "error"
-        && ["timed-out", "failed", "cancelled"].includes(tab.manualState))
+      .filter(tab => tab.status === "error"
+        && (tab.interactionMode !== "manual"
+          || ["timed-out", "failed", "cancelled"].includes(tab.manualState)))
       .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
     if (terminalManual) {
       this.removeTurnTab(terminalManual, false);
@@ -2536,6 +2536,21 @@ class BrowserHost {
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
+    if (tab.status === "error"
+      && tab.interactionMode !== "manual"
+      && !authenticationRequired
+      && !cancelledByUser) {
+      // Keep the latest failed turn's page so its ChatGPT conversation can be inspected. One is
+      // enough: older failed tabs are dropped, and evictOldestReclaimableTurnTab frees it under pressure.
+      for (const other of [...this.turnTabs.values()]) {
+        if (other !== tab && other.status === "error") this.removeTurnTab(other, false);
+      }
+      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      this.logger.info("browser.tab_kept_failed", { tabId: tab.id, traceId });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };
